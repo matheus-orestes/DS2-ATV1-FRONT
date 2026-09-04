@@ -145,10 +145,12 @@ export const funcionarioApi = {
     const result = await request<unknown>('GET', `/funcionarios/${id}`);
     return { ...result, data: unwrapOne(result.data) };
   },
-  indicadores: async (): Promise<ApiResult<Indicadores>> => {
+  getIndicadores: async (): Promise<ApiResult<Indicadores>> => {
     const result = await request<unknown>('GET', '/funcionarios/indicadores');
     return { ...result, data: unwrapIndicators(result.data) };
   },
+  // Alias mantido para compatibilidade com a versão anterior.
+  indicadores: async (): Promise<ApiResult<Indicadores>> => funcionarioApi.getIndicadores(),
   create: async (payload: FuncionarioPayload): Promise<ApiResult<Funcionario>> => {
     const result = await request<unknown>('POST', '/funcionarios', payload);
     return { ...result, data: unwrapOne(result.data) };
