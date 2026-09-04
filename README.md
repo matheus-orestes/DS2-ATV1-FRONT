@@ -1,18 +1,32 @@
 # Contrata RH — React + TypeScript
 
-Versão com o design original preservado, integração real com a API e validações de formulário.
+Frontend completo para gestão de candidatos, com o design original preservado e a integração com a API real.
+
+## Correções desta versão
+
+- Tela de PATCH reorganizada para evitar o layout quebrado causado por grids aninhados.
+- O PATCH agora deixa **Cargo**, **Status** e **Salário** claramente visíveis e independentes.
+- O seletor de candidato ficou separado do formulário de PATCH.
+- O JSON do PATCH mostra exatamente os campos marcados para alteração.
+- Validações de formulário permanecem ativas para nome, e-mail, telefone, cargo, departamento, salário, cidade e status.
+- O endpoint extra **GET /funcionarios/indicadores** agora tem uma área própria de **Indicadores**, com botão de consulta, cards e prévia da resposta.
+- O serviço expõe `getIndicadores()` e mantém `indicadores()` como alias de compatibilidade.
+- O histórico de requisições registra GET de lista, GET por ID, GET de indicadores, POST, PUT, PATCH e DELETE.
+- O mascote continua como identidade central do produto e tela de carregamento.
 
 ## Rodar
 
 ```bash
-npm.cmd install
-npm.cmd run dev
+npm install
+npm run dev
 ```
 
 ## API
 
-`VITE_API_BASE_URL=https://diogo-api.onrender.com`
+Por padrão:
 
-O mascote enviado pelo usuário é usado como marca central, favicon, hero do painel e tela inicial de carregamento.
+```text
+VITE_API_BASE_URL=https://diogo-api.onrender.com
+```
 
-As operações continuam sendo reais: GET lista/detalhe/indicadores, POST, PUT, PATCH e DELETE. Erros HTTP, conflitos 409, indisponibilidade e timeout são exibidos sem mascarar a resposta do backend.
+Pode ser sobrescrita por variável de ambiente.
