@@ -32,11 +32,3 @@ export interface Indicadores {
   contratados?: number;
   [key: string]: unknown;
 }
-
-export type IndicatorSnapshot = {
-  total: number;
-  emAnalise: number;
-  aprovados: number;
-  reprovados: number;
-  contratados: number;
-};

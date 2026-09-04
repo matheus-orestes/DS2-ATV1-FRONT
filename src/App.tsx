@@ -1,205 +1,67 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, BarChart3, ClipboardList, FilePlus2, LayoutDashboard, PencilLine, Search, SlidersHorizontal, Trash2, UserRoundPlus, UsersRound, WifiOff } from 'lucide-react';
 import { ConfirmModal } from './components/ConfirmModal';
+import { Mascot } from './components/Mascot';
 import { Dashboard } from './features/dashboard/Dashboard';
-import { DEMO_FUNCIONARIOS } from './features/funcionarios/seed';
 import { FuncionarioDetails } from './features/funcionarios/FuncionarioDetails';
 import { FuncionarioForm } from './features/funcionarios/FuncionarioForm';
 import { FuncionarioPatch } from './features/funcionarios/FuncionarioPatch';
 import { FuncionariosTable } from './features/funcionarios/FuncionariosTable';
-import { API_BASE_URL, funcionarioApi } from './services/api';
+import { API_BASE_URL, ApiError, funcionarioApi, type HttpMethod } from './services/api';
 import type { Funcionario, FuncionarioPayload, StatusFuncionario } from './types/funcionario';
-import { STATUS_OPTIONS, normalizeFuncionarios, normalizeIndicators } from './utils/format';
+import { STATUS_OPTIONS, normalizeIndicators, normalizeEmail } from './utils/format';
+import { transitionMessage, validatePayload } from './utils/validation';
 
-type Page = 'painel' | 'candidatos' | 'cadastrar' | 'editar' | 'status' | 'excluir' | 'log';
-type LogItem = { id: string; hora: string; method: string; endpoint: string; status: string; body: string };
+ type Page = 'painel'|'candidatos'|'cadastrar'|'editar'|'status'|'excluir'|'log';
+ type LogItem = { id:string; hora:string; method:HttpMethod; endpoint:string; status:string|number; body:string; ok:boolean };
+ const EMPTY: FuncionarioPayload = { nome:'', email:'', telefone:'', cargo:'', departamento:'', salario:0, cidade:'', status:'EM_ANALISE' };
+ const navItems: Array<{id:Page;label:string;icon:typeof LayoutDashboard;chip?:string}> = [
+  {id:'painel',label:'Painel',icon:LayoutDashboard},{id:'candidatos',label:'Candidatos',icon:UsersRound},{id:'cadastrar',label:'Cadastrar',icon:UserRoundPlus,chip:'POST'},{id:'editar',label:'Editar',icon:PencilLine,chip:'PUT'},{id:'status',label:'Atualizar status',icon:SlidersHorizontal,chip:'PATCH'},{id:'excluir',label:'Excluir',icon:Trash2,chip:'DELETE'},{id:'log',label:'Requisições',icon:Activity}
+ ];
 
-const EMPTY_FORM: FuncionarioPayload = { nome: '', email: '', telefone: '', cargo: '', departamento: '', salario: 0, cidade: '', status: 'EM_ANALISE' };
-const navItems: Array<{ id: Page; label: string; icon: typeof LayoutDashboard; chip?: string }> = [
-  { id: 'painel', label: 'Painel', icon: LayoutDashboard },
-  { id: 'candidatos', label: 'Candidatos', icon: UsersRound },
-  { id: 'cadastrar', label: 'Cadastrar', icon: UserRoundPlus, chip: 'POST' },
-  { id: 'editar', label: 'Editar', icon: PencilLine, chip: 'PUT' },
-  { id: 'status', label: 'Atualizar status', icon: SlidersHorizontal, chip: 'PATCH' },
-  { id: 'excluir', label: 'Excluir', icon: Trash2, chip: 'DELETE' },
-  { id: 'log', label: 'Requisições', icon: Activity },
-];
+function payloadFromFuncionario(f:Funcionario):FuncionarioPayload{return {nome:f.nome||'',email:f.email||'',telefone:f.telefone||'',cargo:f.cargo||'',departamento:f.departamento||'',salario:Number(f.salario)||0,cidade:f.cidade||'',status:f.status||'EM_ANALISE'};}
+function errorText(error:unknown){return error instanceof Error?error.message:'Não foi possível concluir a operação.';}
 
-function toPayload(f: Funcionario): FuncionarioPayload {
-  return { nome: f.nome || '', email: f.email || '', telefone: f.telefone || '', cargo: f.cargo || '', departamento: f.departamento || '', salario: Number(f.salario) || 0, cidade: f.cidade || '', status: f.status || 'EM_ANALISE' };
+export default function App(){
+ const [page,setPage]=useState<Page>('painel');
+ const [funcionarios,setFuncionarios]=useState<Funcionario[]>([]);
+ const [indicadores,setIndicadores]=useState({total:0,emAnalise:0,aprovados:0,reprovados:0,contratados:0});
+ const [loading,setLoading]=useState(true); const [indicatorLoading,setIndicatorLoading]=useState(true);
+ const [apiError,setApiError]=useState(''); const [indicatorError,setIndicatorError]=useState('');
+ const [selectedId,setSelectedId]=useState<number|null>(null); const [query,setQuery]=useState(''); const [filter,setFilter]=useState('TODOS'); const [idQuery,setIdQuery]=useState('');
+ const [details,setDetails]=useState<Funcionario|undefined>(); const [form,setForm]=useState(EMPTY); const [fieldErrors,setFieldErrors]=useState<Record<string,string>>({});
+ const [editing,setEditing]=useState<Funcionario|undefined>(); const [patchTarget,setPatchTarget]=useState<Funcionario|undefined>();
+ const [patchValues,setPatchValues]=useState({cargo:false,status:true,salario:false,cargoValue:'',statusValue:'APROVADO' as StatusFuncionario,salarioValue:0});
+ const [errorForm,setErrorForm]=useState('');
+ const [bootLoading,setBootLoading]=useState(true); const [busy,setBusy]=useState(false); const [confirm,setConfirm]=useState<Funcionario|undefined>(); const [deleteError,setDeleteError]=useState(''); const [toast,setToast]=useState(''); const [log,setLog]=useState<LogItem[]>([]);
+ const logCall=useCallback((method:HttpMethod, endpoint:string, status:string|number, body?:unknown, ok=true)=>setLog(l=>[{id:crypto.randomUUID(),hora:new Date().toLocaleTimeString('pt-BR'),method,endpoint,status,body:body===undefined?'—':JSON.stringify(body,null,2),ok},...l].slice(0,60)),[]);
+ const notify=useCallback((message:string)=>{setToast(message);window.setTimeout(()=>setToast(''),3200);},[]);
+ const loadFuncionarios=useCallback(async()=>{setLoading(true);setApiError('');try{const r=await funcionarioApi.findAll();setFuncionarios(r.data);setSelectedId(r.data[0]?.id??null);logCall('GET','/funcionarios',r.status+' '+(r.statusText||'OK'),undefined,true);}catch(e){const err=e instanceof ApiError?e:new ApiError(0,'GET',`${API_BASE_URL}/funcionarios`,errorText(e),errorText(e));setFuncionarios([]);setApiError(err.message);logCall('GET','/funcionarios',err.status||'NETWORK',undefined,false);}finally{setLoading(false);}},[logCall]);
+ const loadIndicators=useCallback(async()=>{setIndicatorLoading(true);setIndicatorError('');try{const r=await funcionarioApi.indicadores();setIndicadores(normalizeIndicators(r.data));logCall('GET','/funcionarios/indicadores',r.status+' '+(r.statusText||'OK'),undefined,true);}catch(e){const err=e instanceof ApiError?e:new ApiError(0,'GET',`${API_BASE_URL}/funcionarios/indicadores`,errorText(e),errorText(e));setIndicatorError(err.message);logCall('GET','/funcionarios/indicadores',err.status||'NETWORK',undefined,false);}finally{setIndicatorLoading(false);}},[logCall]);
+ const refresh=useCallback(async()=>{await Promise.allSettled([loadFuncionarios(),loadIndicators()]);},[loadFuncionarios,loadIndicators]);
+ useEffect(()=>{let active=true;const start=Date.now();const maxTimer=window.setTimeout(()=>{if(active)setBootLoading(false);},2600);void refresh().finally(()=>{const wait=Math.max(0,850-(Date.now()-start));window.setTimeout(()=>{if(active)setBootLoading(false);},wait);});return()=>{active=false;window.clearTimeout(maxTimer);};},[refresh]);
+ const filtered=useMemo(()=>{const term=query.trim().toLowerCase();return funcionarios.filter(f=>(filter==='TODOS'||f.status===filter)&&(!term||[f.nome,f.email,f.cargo,f.departamento,f.cidade,f.status].join(' ').toLowerCase().includes(term)));},[funcionarios,query,filter]);
+ const fetchById=useCallback(async(id:number)=>{setBusy(true);try{const r=await funcionarioApi.findById(id);setDetails(r.data);setSelectedId(id);logCall('GET',`/funcionarios/${id}`,r.status+' '+(r.statusText||'OK'));return r.data;}catch(e){const msg=errorText(e);setErrorForm(msg);setDetails(undefined);const err=e instanceof ApiError?e:null;logCall('GET',`/funcionarios/${id}`,err?.status||'NETWORK',undefined,false);return undefined;}finally{setBusy(false);}},[logCall]);
+ const openEdit=async(id:number)=>{setErrorForm('');const f=await fetchById(id);if(f){setEditing(f);setPage('editar');}};
+ const openPatch=async(id:number)=>{setErrorForm('');const f=await fetchById(id);if(f){setPatchTarget(f);setPatchValues({cargo:false,status:true,salario:false,cargoValue:f.cargo||'',statusValue:f.status,salarioValue:Number(f.salario)||0});setPage('status');}};
+ const consult=async()=>{const id=Number(idQuery);if(!Number.isInteger(id)||id<=0){setErrorForm('Informe um ID válido.');return;}await fetchById(id);};
+ const create=async()=>{const errors=validatePayload(form,funcionarios);setFieldErrors(errors);setErrorForm('');if(Object.keys(errors).length)return;if(form.status!=='EM_ANALISE'){setFieldErrors({status:'Novo candidato deve iniciar em Em análise.'});return;}setBusy(true);try{const r=await funcionarioApi.create({...form,email:normalizeEmail(form.email)});logCall('POST','/funcionarios',r.status+' '+(r.statusText||'Created'),form);notify('Candidato cadastrado com sucesso.');setForm(EMPTY);setFieldErrors({});await refresh();setPage('candidatos');}catch(e){setErrorForm(errorText(e));const err=e instanceof ApiError?e:null;logCall('POST','/funcionarios',err?.status||'NETWORK',form,false);}finally{setBusy(false);}};
+ const update=async()=>{if(!editing)return;const p=payloadFromFuncionario(editing);const errors=validatePayload(p,funcionarios,editing.id);const transition=transitionMessage((funcionarios.find(f=>f.id===editing.id)?.status)||editing.status,p.status);if(transition)errors.status=transition;setFieldErrors(errors);setErrorForm('');if(Object.keys(errors).length)return;setBusy(true);try{const r=await funcionarioApi.update(editing.id,p);logCall('PUT',`/funcionarios/${editing.id}`,r.status+' '+(r.statusText||'OK'),p);notify('Registro atualizado por completo.');await refresh();setEditing(undefined);setPage('candidatos');}catch(e){setErrorForm(errorText(e));const err=e instanceof ApiError?e:null;logCall('PUT',`/funcionarios/${editing.id}`,err?.status||'NETWORK',p,false);}finally{setBusy(false);}};
+ const applyPatch=async()=>{if(!patchTarget)return;const body:Record<string,unknown>={};if(patchValues.cargo)body.cargo=patchValues.cargoValue.trim();if(patchValues.status)body.status=patchValues.statusValue;if(patchValues.salario)body.salario=Number(patchValues.salarioValue);if(!Object.keys(body).length){setErrorForm('Selecione ao menos um campo para atualizar.');return;}if(patchValues.cargo&&!patchValues.cargoValue.trim()){setErrorForm('Cargo não pode ficar vazio.');return;}if(patchValues.salario&&(!Number.isFinite(Number(patchValues.salarioValue))||Number(patchValues.salarioValue)<=0)){setErrorForm('Salário precisa ser maior que zero.');return;}const transition=patchValues.status?transitionMessage(patchTarget.status,patchValues.statusValue):'';if(transition){setErrorForm(transition);return;}setBusy(true);setErrorForm('');try{const r=await funcionarioApi.patch(patchTarget.id,body);logCall('PATCH',`/funcionarios/${patchTarget.id}`,r.status+' '+(r.statusText||'OK'),body);notify('Atualização parcial aplicada.');await refresh();setPatchTarget(undefined);setPage('candidatos');}catch(e){setErrorForm(errorText(e));const err=e instanceof ApiError?e:null;logCall('PATCH',`/funcionarios/${patchTarget.id}`,err?.status||'NETWORK',body,false);}finally{setBusy(false);}};
+ const remove=async()=>{if(!confirm)return;setBusy(true);setDeleteError('');try{const r=await funcionarioApi.remove(confirm.id);logCall('DELETE',`/funcionarios/${confirm.id}`,r.status+' '+(r.statusText||'No Content'));notify('Candidato removido.');setConfirm(undefined);await refresh();}catch(e){setDeleteError(errorText(e));const err=e instanceof ApiError?e:null;logCall('DELETE',`/funcionarios/${confirm.id}`,err?.status||'NETWORK',undefined,false);}finally{setBusy(false);}};
+ const pageTitle:Record<Page,[string,string]>={painel:['Painel de indicadores','Visão geral do processo de contratação'],candidatos:['Candidatos','Todos os candidatos cadastrados'],cadastrar:['Cadastrar candidato','Registre um novo candidato no processo'],editar:['Editar candidato','Revise todos os dados de um candidato'],status:['Atualização parcial','Altere apenas o que mudou no processo'],excluir:['Excluir candidato','Remova um candidato da lista'],log:['Requisições HTTP','Chamadas feitas pela interface nesta sessão']};
+ return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark mascot-brand"><Mascot size={38} /></div><div><strong>Contrata RH</strong><span>Recursos Humanos</span></div></div><div className="menu-label">Menu</div><nav className="sidebar-nav">{navItems.slice(0,6).map(item=>{const Icon=item.icon;return <button key={item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>{setPage(item.id);setErrorForm('');}}><Icon size={17}/><span>{item.label}</span>{item.chip&&<small>{item.chip}</small>}</button>})}</nav><div className="menu-label menu-label-spaced">Geral</div><nav className="sidebar-nav"><button className={`nav-item ${page==='log'?'active':''}`} onClick={()=>setPage('log')}><Activity size={17}/><span>Requisições</span>{log.length>0&&<small>{log.length}</small>}</button></nav><div className="sidebar-footer"><div className={`api-dot ${apiError?'offline':''}`}/><div><strong>{apiError?'API indisponível':'API conectada'}</strong><span>{API_BASE_URL.replace(/^https?:\/\//,'')}</span></div></div></aside>
+ <main className="main-content"><header className="topbar"><div><div className="eyebrow">Contrata RH</div><h1>{pageTitle[page][0]}</h1><p>{pageTitle[page][1]}</p></div><div className="topbar-actions"><div className="api-badge"><span className={`status-dot ${apiError||indicatorError?'offline':'online'}`}/>{apiError||indicatorError?'API com erro':'API online'}</div><button className="icon-button" title="Sincronizar" onClick={()=>void refresh()} disabled={loading||indicatorLoading}><BarChart3 size={18}/></button></div></header>
+ {apiError&&<div className="warning-banner"><WifiOff size={16}/><span>{apiError}</span><button onClick={()=>void loadFuncionarios()}>Tentar novamente</button></div>}{indicatorError&&<div className="warning-banner"><WifiOff size={16}/><span>Indicadores: {indicatorError}</span><button onClick={()=>void loadIndicators()}>Tentar novamente</button></div>}
+ <div className="content-body">
+ {page==='painel'&&<Dashboard funcionarios={funcionarios} indicadores={indicadores} onOpenCandidates={()=>setPage('candidatos')} onView={(id)=>{setPage('candidatos');setIdQuery(String(id));void fetchById(id);}}/>}
+ {page==='candidatos'&&<div className="split-page"><div className="card list-card"><div className="toolbar"><div className="search-box"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Buscar por nome, cargo, cidade..."/></div><div className="filter-chips"><button className={`filter-chip ${filter==='TODOS'?'active':''}`} onClick={()=>setFilter('TODOS')}>Todos</button>{STATUS_OPTIONS.map(s=><button key={s.value} className={`filter-chip ${filter===s.value?'active':''}`} onClick={()=>setFilter(s.value)}>{s.label}</button>)}</div><span className="result-count">{loading?'Carregando…':`${filtered.length} de ${funcionarios.length} candidatos`}</span></div>{loading?<div className="empty-state">Carregando funcionários da API…</div>:apiError?<div className="empty-state">A lista não pode ser exibida enquanto a API estiver indisponível.</div>:<FuncionariosTable rows={filtered} onView={(id)=>{setIdQuery(String(id));void fetchById(id);}} onEdit={openEdit} onPatch={openPatch} onDelete={(f)=>{if(f.status==='CONTRATADO'){notify('Contratados não podem ser excluídos pela interface.');return;}setDeleteError('');setConfirm(f);}}/>}{!loading&&!apiError&&!filtered.length&&<div className="empty-state">Nenhum candidato corresponde aos filtros.</div>}</div><div className="page-stack"><div className="card"><div className="section-header"><div><h3>Consulta por ID</h3><span>GET /funcionarios/{'{id}'}</span></div><span className="tag tag-neutral">GET</span></div><div className="id-search"><input className="input" value={idQuery} onChange={e=>setIdQuery(e.target.value)} placeholder="ID"/><button className="btn btn-primary" onClick={consult} disabled={busy}>Consultar</button></div>{details&&<FuncionarioDetails funcionario={details} onEdit={()=>void openEdit(details.id)} onPatch={()=>void openPatch(details.id)}/>} {!details&&<div className="empty-state">Consulte um ID para exibir os dados completos.</div>}{errorForm&&<div className="form-error">{errorForm}</div>}</div></div></div>}
+ {page==='cadastrar'&&<FuncionarioForm value={form} onChange={next=>{setForm(next);setFieldErrors({});setErrorForm('');}} onSubmit={()=>void create()} submitLabel="Cadastrar candidato" busy={busy} error={errorForm} fieldErrors={fieldErrors} title="Novo candidato" subtitle="Preencha os dados que serão enviados à API." method="POST"/>}
+ {page==='editar'&&<FuncionarioForm value={editing?payloadFromFuncionario(editing):EMPTY} onChange={next=>setEditing(editing?{...editing,...next}:undefined)} onSubmit={()=>void update()} onCancel={()=>{setEditing(undefined);setPage('candidatos');}} submitLabel="Salvar alterações" busy={busy} error={errorForm} fieldErrors={fieldErrors} title={editing?`Editar ${editing.nome}`:'Editar candidato'} subtitle={editing?`Registro #${editing.id} · PUT substitui o registro completo.`:'Selecione um candidato na lista.'} method="PUT"/>}
+ {page==='status'&&<div className="split-page"><div className="card"><div className="section-header"><div><h3>Selecionar candidato</h3><span>Escolha o registro que receberá o PATCH.</span></div><span className="tag tag-lime">PATCH</span></div><select className="input" value={patchTarget?.id??''} onChange={e=>e.target.value?void openPatch(Number(e.target.value)):setPatchTarget(undefined)} disabled={busy}><option value="">Selecione…</option>{funcionarios.map(f=><option key={f.id} value={f.id}>#{f.id} — {f.nome} · {f.cargo}</option>)}</select></div><FuncionarioPatch funcionario={patchTarget} selected={patchValues} onSelectedChange={setPatchValues} onSubmit={()=>void applyPatch()} onCancel={()=>{setPatchTarget(undefined);setPage('candidatos');}} busy={busy} error={errorForm}/></div>}
+ {page==='excluir'&&<div className="card"><div className="section-header"><div><h3>Excluir candidato</h3><span>A ação pede confirmação antes de chamar DELETE.</span></div><span className="tag tag-outline">DELETE</span></div><FuncionariosTable rows={funcionarios} onView={(id)=>{setPage('candidatos');setIdQuery(String(id));void fetchById(id);}} onEdit={openEdit} onPatch={openPatch} onDelete={(f)=>{if(f.status==='CONTRATADO'){notify('Contratados não podem ser excluídos pela interface.');return;}setDeleteError('');setConfirm(f);}}/></div>}
+ {page==='log'&&<div className="card"><div className="section-header"><div><h3>Histórico de requisições</h3><span>Método, endpoint, status e corpo efetivamente usados.</span></div><button className="btn btn-secondary" onClick={()=>setLog([])} disabled={!log.length}>Limpar</button></div><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Método</th><th>Endpoint</th><th>Resposta</th><th>Corpo</th></tr></thead><tbody>{log.map(item=><tr key={item.id}><td className="mono muted">{item.hora}</td><td><span className={item.method==='DELETE'?'tag tag-outline':item.method==='PUT'?'tag tag-green':'tag tag-lime'}>{item.method}</span></td><td className="mono">{item.endpoint}</td><td><span className={item.ok?'tag tag-green':'tag tag-outline'}>{item.status}</span></td><td><code className="body-code">{item.body}</code></td></tr>)}</tbody></table>{!log.length&&<div className="empty-state">Nenhuma requisição registrada nesta sessão.</div>}</div></div>}
+ </div></main>
+ {bootLoading&&<div className="boot-screen" role="status" aria-live="polite"><div className="boot-card"><div className="boot-mascot-wrap"><Mascot size={190} /></div><div className="eyebrow">Contrata RH</div><h2>Seu copiloto de RH</h2><p>Organizando candidatos e preparando o painel…</p><div className="boot-progress"><span /></div></div></div>} {confirm&&<ConfirmModal funcionario={confirm} onCancel={()=>setConfirm(undefined)} onConfirm={()=>void remove()} loading={busy} error={deleteError}/>} {toast&&<div className="toast"><Activity size={17}/><div>{toast}<small>Operação processada</small></div></div>}
+ </div>;
 }
-
-function App() {
-  const [page, setPage] = useState<Page>('painel');
-  const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
-  const [indicadores, setIndicadores] = useState<import('./types/funcionario').IndicatorSnapshot | null>(null);
-  const [usingDemo, setUsingDemo] = useState(false);
-  const [apiError, setApiError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('TODOS');
-  const [idQuery, setIdQuery] = useState('');
-  const [details, setDetails] = useState<Funcionario | undefined>();
-  const [form, setForm] = useState<FuncionarioPayload>(EMPTY_FORM);
-  const [editing, setEditing] = useState<Funcionario | undefined>();
-  const [patchTarget, setPatchTarget] = useState<Funcionario | undefined>();
-  const [patchValues, setPatchValues] = useState({ cargo: false, status: true, salario: false, cargoValue: '', statusValue: 'APROVADO' as StatusFuncionario, salarioValue: 0 });
-  const [errorForm, setErrorForm] = useState('');
-  const [busyAction, setBusyAction] = useState(false);
-  const [confirm, setConfirm] = useState<Funcionario | undefined>();
-  const [log, setLog] = useState<LogItem[]>([]);
-  const [toast, setToast] = useState('');
-
-  const registrar = useCallback((method: string, endpoint: string, status: string, body?: unknown) => {
-    setLog((current) => [{ id: crypto.randomUUID(), hora: new Date().toLocaleTimeString('pt-BR'), method, endpoint, status, body: body ? JSON.stringify(body) : '—' }, ...current].slice(0, 50));
-  }, []);
-
-  const avisar = useCallback((message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(''), 3000);
-  }, []);
-
-  const loadFuncionarios = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [listResult, indicatorResult] = await Promise.allSettled([funcionarioApi.findAll(), funcionarioApi.indicadores()]);
-      if (listResult.status === 'fulfilled') {
-        const data = normalizeFuncionarios(listResult.value.data);
-        setFuncionarios(data);
-        setUsingDemo(false);
-        setApiError('');
-        registrar('GET', '/funcionarios', `${listResult.value.status} ${listResult.value.statusText || 'OK'}`);
-      } else {
-        const message = listResult.reason instanceof Error ? listResult.reason.message : 'Falha ao consultar a API.';
-        setFuncionarios(DEMO_FUNCIONARIOS);
-        setUsingDemo(true);
-        setApiError(`A API não pôde ser consultada agora. Exibindo dados de demonstração. ${message}`);
-        registrar('GET', '/funcionarios', 'FALHA', { message });
-      }
-      if (indicatorResult.status === 'fulfilled') {
-        setIndicadores(normalizeIndicators(indicatorResult.value.data));
-        registrar('GET', '/funcionarios/indicadores', `${indicatorResult.value.status} ${indicatorResult.value.statusText || 'OK'}`);
-      } else {
-        setIndicadores(null);
-      }
-    } finally { setLoading(false); }
-  }, [registrar]);
-
-  useEffect(() => { void loadFuncionarios(); }, [loadFuncionarios]);
-
-  const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase();
-    return funcionarios.filter((f) => {
-      const matchFilter = filter === 'TODOS' || f.status === filter;
-      const matchSearch = !term || [f.nome, f.email, f.cargo, f.departamento, f.cidade, f.status].join(' ').toLowerCase().includes(term);
-      return matchFilter && matchSearch;
-    });
-  }, [funcionarios, query, filter]);
-
-  const findRemoteById = async (id: number) => {
-    setBusyAction(true);
-    try { const result = await funcionarioApi.findById(id); setDetails(result.data); registrar('GET', `/funcionarios/${id}`, `${result.status} ${result.statusText || 'OK'}`); setSelectedId(id); }
-    catch (error) { const message = error instanceof Error ? error.message : 'Funcionário não encontrado.'; setDetails(undefined); registrar('GET', `/funcionarios/${id}`, 'FALHA', { message }); setErrorForm(message); }
-    finally { setBusyAction(false); }
-  };
-
-  const openEdit = async (id: number) => {
-    setPage('editar'); setErrorForm('');
-    try {
-      const remote = await funcionarioApi.findById(id); setEditing(remote.data); setSelectedId(id); registrar('GET', `/funcionarios/${id}`, `${remote.status} ${remote.statusText || 'OK'}`);
-    } catch { const local = funcionarios.find((item) => item.id === id); setEditing(local); setSelectedId(id); registrar('GET', `/funcionarios/${id}`, usingDemo ? 'DEMO' : 'FALHA'); }
-  };
-
-  const openPatch = (id: number) => {
-    const local = funcionarios.find((item) => item.id === id); setPatchTarget(local); setPatchValues({ cargo: false, status: true, salario: false, cargoValue: local?.cargo || '', statusValue: local?.status || 'APROVADO', salarioValue: Number(local?.salario) || 0 }); setSelectedId(id); setPage('status'); setErrorForm('');
-  };
-
-  const create = async () => {
-    if (!form.nome.trim() || !form.email.trim() || !form.cargo.trim()) return setErrorForm('Nome, e-mail e cargo são obrigatórios.');
-    setBusyAction(true); setErrorForm('');
-    try {
-      const result = await funcionarioApi.create(form);
-      const created = result.data;
-      setFuncionarios((current) => [...current, created]); setForm(EMPTY_FORM); registrar('POST', '/funcionarios', `${result.status} ${result.statusText || 'Created'}`, form); avisar('Candidato cadastrado com sucesso.'); setPage('candidatos');
-    } catch (error) { const message = error instanceof Error ? error.message : 'Falha ao cadastrar.'; setErrorForm(message); registrar('POST', '/funcionarios', 'FALHA', form); }
-    finally { setBusyAction(false); }
-  };
-
-  const update = async () => {
-    if (!editing) return;
-    const payload = toPayload(editing);
-    if (!payload.nome.trim() || !payload.email.trim() || !payload.cargo.trim()) return setErrorForm('Nome, e-mail e cargo são obrigatórios.');
-    setBusyAction(true); setErrorForm('');
-    try { const result = await funcionarioApi.update(editing.id, payload); setFuncionarios((current) => current.map((item) => item.id === editing.id ? result.data : item)); registrar('PUT', `/funcionarios/${editing.id}`, `${result.status} ${result.statusText || 'OK'}`, payload); avisar('Registro atualizado por completo.'); setPage('candidatos'); }
-    catch (error) { const message = error instanceof Error ? error.message : 'Falha ao atualizar.'; setErrorForm(message); registrar('PUT', `/funcionarios/${editing.id}`, 'FALHA', payload); }
-    finally { setBusyAction(false); }
-  };
-
-  const applyPatch = async () => {
-    if (!patchTarget) return;
-    const payload: Record<string, unknown> = {};
-    if (patchValues.cargo) payload.cargo = patchValues.cargoValue;
-    if (patchValues.status) payload.status = patchValues.statusValue;
-    if (patchValues.salario) payload.salario = Number(patchValues.salarioValue) || 0;
-    if (!Object.keys(payload).length) return setErrorForm('Selecione ao menos um campo para atualizar.');
-    setBusyAction(true); setErrorForm('');
-    try { const result = await funcionarioApi.patch(patchTarget.id, payload); setFuncionarios((current) => current.map((item) => item.id === patchTarget.id ? ({ ...item, ...(result.data && typeof result.data === 'object' ? result.data : payload) }) : item)); setPatchTarget((current) => current ? ({ ...current, ...(result.data && typeof result.data === 'object' ? result.data : payload) }) : current); registrar('PATCH', `/funcionarios/${patchTarget.id}`, `${result.status} ${result.statusText || 'OK'}`, payload); avisar('Atualização parcial aplicada.'); setPage('candidatos'); }
-    catch (error) { const message = error instanceof Error ? error.message : 'Falha no PATCH.'; setErrorForm(message); registrar('PATCH', `/funcionarios/${patchTarget.id}`, 'FALHA', payload); }
-    finally { setBusyAction(false); }
-  };
-
-  const remove = async () => {
-    if (!confirm) return;
-    setBusyAction(true);
-    try { const result = await funcionarioApi.remove(confirm.id); setFuncionarios((current) => current.filter((item) => item.id !== confirm.id)); registrar('DELETE', `/funcionarios/${confirm.id}`, `${result.status} ${result.statusText || 'No Content'}`); avisar('Candidato removido.'); setConfirm(undefined); if (page === 'excluir') setPage('candidatos'); }
-    catch (error) { const message = error instanceof Error ? error.message : 'Falha ao excluir.'; registrar('DELETE', `/funcionarios/${confirm.id}`, 'FALHA', { message }); avisar(message); }
-    finally { setBusyAction(false); }
-  };
-
-  const consult = async () => {
-    const id = Number(idQuery); if (!Number.isInteger(id) || id <= 0) return setErrorForm('Informe um ID válido.');
-    await findRemoteById(id);
-  };
-
-  const pageTitle: Record<Page, [string, string]> = {
-    painel: ['Painel de indicadores', 'Visão geral do processo de contratação'],
-    candidatos: ['Candidatos', 'Todos os candidatos cadastrados'],
-    cadastrar: ['Cadastrar candidato', 'Registre um novo candidato no processo'],
-    editar: ['Editar candidato', 'Revise todos os dados de um candidato'],
-    status: ['Atualização parcial', 'Altere apenas o que mudou no processo'],
-    excluir: ['Excluir candidato', 'Remova um candidato da lista'],
-    log: ['Requisições HTTP', 'Chamadas feitas pela interface nesta sessão'],
-  };
-
-  return <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand"><div className="brand-mark">♙</div><div><strong>Contrata RH</strong><span>Recursos Humanos</span></div></div>
-      <div className="menu-label">Menu</div>
-      <nav className="sidebar-nav">{navItems.slice(0, 6).map((item) => { const Icon = item.icon; const active = page === item.id; return <button className={`nav-item ${active ? 'active' : ''}`} key={item.id} onClick={() => setPage(item.id)}><Icon size={17} /><span>{item.label}</span>{item.chip && <small>{item.chip}</small>}</button>; })}</nav>
-      <div className="menu-label menu-label-spaced">Geral</div>
-      <nav className="sidebar-nav">{navItems.slice(6).map((item) => { const Icon = item.icon; return <button className={`nav-item ${page === item.id ? 'active' : ''}`} key={item.id} onClick={() => setPage(item.id)}><Icon size={17} /><span>{item.label}</span>{item.id === 'log' && log.length > 0 && <small>{log.length}</small>}</button>; })}</nav>
-      <div className="sidebar-footer"><div className="api-dot" /><div><strong>API conectada</strong><span>{API_BASE_URL.replace(/^https?:\/\//, '')}</span></div></div>
-    </aside>
-
-    <main className="main-content">
-      <header className="topbar"><div><div className="eyebrow">Contrata RH</div><h1>{pageTitle[page][0]}</h1><p>{pageTitle[page][1]}</p></div><div className="topbar-actions"><div className="api-badge"><span className={`status-dot ${apiError ? 'offline' : 'online'}`} />{apiError ? 'Modo demonstração' : 'API online'}</div><button className="icon-button" title="Recarregar dados" onClick={() => void loadFuncionarios()}><BarChart3 size={18} /></button></div></header>
-      {apiError && <div className="warning-banner"><WifiOff size={16} /><span>{apiError}</span><button onClick={() => void loadFuncionarios()}>Tentar novamente</button></div>}
-      {usingDemo && !apiError && <div className="info-banner"><ClipboardList size={16} /><span>Os registros exibidos estão em modo de demonstração.</span></div>}
-
-      <div className="content-body">
-        {page === 'painel' && <Dashboard funcionarios={funcionarios} indicadores={indicadores} onOpenCandidates={() => setPage('candidatos')} onView={(id) => { setPage('candidatos'); setIdQuery(String(id)); void findRemoteById(id); }} />}
-        {page === 'candidatos' && <div className="split-page"><div className="card list-card"><div className="toolbar"><div className="search-box"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nome, cargo, cidade..." /></div><div className="filter-chips"><button className={filter === 'TODOS' ? 'filter-chip active' : 'filter-chip'} onClick={() => setFilter('TODOS')}>Todos</button>{STATUS_OPTIONS.map((item) => <button className={filter === item.value ? 'filter-chip active' : 'filter-chip'} onClick={() => setFilter(item.value)} key={item.value}>{item.label}</button>)}</div><span className="result-count">{filtered.length} de {funcionarios.length} candidatos</span></div><FuncionariosTable rows={filtered} onView={(id) => { setIdQuery(String(id)); void findRemoteById(id); }} onEdit={openEdit} onPatch={openPatch} onDelete={setConfirm} /></div><div className="page-stack"><div className="card"><div className="section-header"><div><h3>Consulta por ID</h3><span>GET /funcionarios/{'{id}'}</span></div><span className="tag tag-neutral">GET</span></div><div className="id-search"><input className="input" value={idQuery} onChange={(e) => setIdQuery(e.target.value)} placeholder="ID" /><button className="btn btn-primary" onClick={consult} disabled={busyAction}>Consultar</button></div>{details && <FuncionarioDetails funcionario={details} onEdit={() => void openEdit(details.id)} onPatch={() => openPatch(details.id)} />}{errorForm && <div className="form-error">{errorForm}</div>}</div></div></div>}
-        {page === 'cadastrar' && <FuncionarioForm value={form} onChange={setForm} onSubmit={() => void create()} submitLabel="Cadastrar candidato" busy={busyAction} error={errorForm} title="Novo candidato" subtitle="Preencha os dados que serão enviados à API." method="POST" />}
-        {page === 'editar' && <FuncionarioForm value={editing ? toPayload(editing) : EMPTY_FORM} onChange={(next) => setEditing(editing ? { ...editing, ...next } : undefined)} onSubmit={() => void update()} onCancel={() => setPage('candidatos')} submitLabel="Salvar alterações" busy={busyAction} error={errorForm} title="Editar candidato" subtitle={editing ? `Editando #${editing.id} — ${editing.nome}` : 'Selecione um candidato na lista.'} method="PUT" />}
-        {page === 'status' && <div className="split-page"><div className="card"><div className="section-header"><div><h3>Selecionar candidato</h3><span>Escolha o registro que receberá o PATCH.</span></div><span className="tag tag-accent">PATCH</span></div><select className="input" value={patchTarget?.id ?? ''} onChange={(e) => e.target.value ? openPatch(Number(e.target.value)) : setPatchTarget(undefined)}><option value="">Selecione…</option>{funcionarios.map((f) => <option key={f.id} value={f.id}>#{f.id} — {f.nome} · {f.cargo}</option>)}</select></div><FuncionarioPatch funcionario={patchTarget} selected={patchValues} onSelectedChange={setPatchValues} onSubmit={() => void applyPatch()} busy={busyAction} error={errorForm} /></div>}
-        {page === 'excluir' && <div className="card"><div className="section-header"><div><h3>Excluir candidato</h3><span>A ação pede confirmação antes de chamar DELETE.</span></div><span className="tag tag-outline">DELETE</span></div><FuncionariosTable rows={funcionarios} onView={(id) => { setPage('candidatos'); setIdQuery(String(id)); void findRemoteById(id); }} onEdit={openEdit} onPatch={openPatch} onDelete={setConfirm} /></div>}
-        {page === 'log' && <div className="card"><div className="section-header"><div><h3>Histórico de requisições</h3><span>Cada ação registra método, endpoint, resposta e corpo.</span></div><Activity size={19} /></div><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Método</th><th>Endpoint</th><th>Resposta</th><th>Corpo</th></tr></thead><tbody>{log.map((item) => <tr key={item.id}><td className="mono muted">{item.hora}</td><td>{item.method}</td><td className="mono">{item.endpoint}</td><td>{item.status}</td><td><code className="body-code">{item.body}</code></td></tr>)}</tbody></table>{log.length === 0 && <div className="empty-state">Nenhuma requisição registrada nesta sessão.</div>}</div></div>}
-      </div>
-    </main>
-    {confirm && <ConfirmModal funcionario={confirm} onCancel={() => setConfirm(undefined)} onConfirm={() => void remove()} loading={busyAction} />}
-    {toast && <div className="toast"><Activity size={17} /><div>{toast}<small>Operação processada</small></div></div>}
-  </div>;
-}
-
-export default App;
