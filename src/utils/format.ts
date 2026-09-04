@@ -7,54 +7,38 @@ export const STATUS_OPTIONS: Array<{ value: StatusFuncionario; label: string }> 
   { value: 'CONTRATADO', label: 'Contratado' },
 ];
 
-export function statusLabel(status: StatusFuncionario): string {
-  return STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status;
-}
-
+export function statusLabel(status: StatusFuncionario): string { return STATUS_OPTIONS.find((s) => s.value === status)?.label ?? status; }
 export function statusClass(status: StatusFuncionario): string {
   if (status === 'APROVADO') return 'tag tag-lime';
   if (status === 'CONTRATADO') return 'tag tag-green';
   if (status === 'REPROVADO') return 'tag tag-outline';
   return 'tag tag-neutral';
 }
-
 export function methodClass(method: string): string {
   if (method === 'POST' || method === 'PATCH') return 'tag tag-lime';
   if (method === 'PUT') return 'tag tag-green';
   if (method === 'DELETE') return 'tag tag-outline';
   return 'tag tag-neutral';
 }
-
 export function money(value: unknown): string {
-  const n = Number(value) || 0;
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const n = Number(value);
+  return (Number.isFinite(n) ? n : 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
-
-export function initials(name: string): string {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((item) => item[0]).join('').toUpperCase();
-}
-
+export function initials(name: string): string { return name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase(); }
+export function normalizeEmail(email: string | undefined): string { return (email || '').trim().toLowerCase(); }
 export function normalizeFuncionarios(input: unknown): Funcionario[] {
   if (Array.isArray(input)) return input as Funcionario[];
-  if (input && typeof input === 'object') {
-    const obj = input as { content?: unknown; data?: unknown; funcionarios?: unknown };
-    for (const key of ['content', 'data', 'funcionarios'] as const) {
-      if (Array.isArray(obj[key])) return obj[key] as Funcionario[];
-    }
-  }
+  if (!input || typeof input !== 'object') return [];
+  const o = input as Record<string, unknown>;
+  for (const k of ['content', 'data', 'funcionarios', 'items', 'results']) if (Array.isArray(o[k])) return o[k] as Funcionario[];
   return [];
 }
-
-export function normalizeIndicators(input: unknown): import('../types/funcionario').IndicatorSnapshot | null {
-  if (!input || typeof input !== 'object') return null;
-  const obj = input as Record<string, unknown>;
-  const nested = (obj.indicadores && typeof obj.indicadores === 'object') ? obj.indicadores as Record<string, unknown> : obj;
-  const read = (keys: string[], fallback: number) => { for (const key of keys) { const value = nested[key]; if (typeof value === 'number' && Number.isFinite(value)) return value; if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value); } return fallback; };
-  return {
-    total: read(['total','quantidadeTotal','totalFuncionarios','totalCandidatos'], 0),
-    emAnalise: read(['emAnalise','em_analise','pendentes','aguardandoAvaliacao'], 0),
-    aprovados: read(['aprovados','aprovado','quantidadeAprovados'], 0),
-    reprovados: read(['reprovados','reprovado','quantidadeReprovados'], 0),
-    contratados: read(['contratados','contratado','quantidadeContratados'], 0),
+export function normalizeIndicators(input: unknown): { total: number; emAnalise: number; aprovados: number; reprovados: number; contratados: number } {
+  const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const nested = (o.indicadores && typeof o.indicadores === 'object' ? o.indicadores : o) as Record<string, unknown>;
+  const read = (keys: string[]) => {
+    for (const k of keys) { const v = nested[k]; const n = Number(v); if (Number.isFinite(n)) return n; }
+    return 0;
   };
+  return { total: read(['total','totalFuncionarios','totalCandidatos']), emAnalise: read(['emAnalise','em_analise','pendentes']), aprovados: read(['aprovados','aprovado']), reprovados: read(['reprovados','reprovado']), contratados: read(['contratados','contratado']) };
 }
