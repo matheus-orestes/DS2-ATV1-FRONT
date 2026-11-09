@@ -30,3 +30,7 @@ VITE_API_BASE_URL=https://diogo-api.onrender.com
 ```
 
 Pode ser sobrescrita por variável de ambiente.
+
+## Verificação da CI
+
+Esta alteração mínima existe para validar o gatilho de `pull_request` do pipeline GitHub Actions.
